@@ -69,16 +69,19 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment env) {
         Messager messager = processingEnv.getMessager();
         try {
+            // 得到gradle中配置的参数eventBusIndex
             String index = processingEnv.getOptions().get(OPTION_EVENT_BUS_INDEX);
             if (index == null) {
                 messager.printMessage(Diagnostic.Kind.ERROR, "No option " + OPTION_EVENT_BUS_INDEX +
                         " passed to annotation processor");
                 return false;
             }
+            // 输出日志的标记位，可以忽略
             verbose = Boolean.parseBoolean(processingEnv.getOptions().get(OPTION_VERBOSE));
+            // 从eventBusIndex中截取我们要使用的包名
             int lastPeriod = index.lastIndexOf('.');
             String indexPackage = lastPeriod != -1 ? index.substring(0, lastPeriod) : null;
-
+            // 记录是第几次执行process方法
             round++;
             if (verbose) {
                 messager.printMessage(Diagnostic.Kind.NOTE, "Processing round " + round + ", new annotations: " +
@@ -99,10 +102,13 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
                 messager.printMessage(Diagnostic.Kind.ERROR,
                         "Unexpected processing state: annotations still available after writing.");
             }
+            // 收集代码中使用的注解
             collectSubscribers(annotations, env, messager);
+            // 检查是否有需要忽略的注解
             checkForSubscribersToSkip(messager, indexPackage);
 
             if (!methodsByClass.isEmpty()) {
+                // 生成源文件
                 createInfoIndexFile(index);
             } else {
                 messager.printMessage(Diagnostic.Kind.WARNING, "No @Subscribe annotations found");
@@ -116,13 +122,21 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
         return true;
     }
 
+    /**
+     * 收集代码中使用的Subscribe注解
+     * */
     private void collectSubscribers(Set<? extends TypeElement> annotations, RoundEnvironment env, Messager messager) {
+        // 遍历所有要使用的注解
         for (TypeElement annotation : annotations) {
+            // 得到这个注解标注的所有元素集合
             Set<? extends Element> elements = env.getElementsAnnotatedWith(annotation);
             for (Element element : elements) {
+                // 判断是否是一个可执行的方法
                 if (element instanceof ExecutableElement) {
                     ExecutableElement method = (ExecutableElement) element;
+                    // 检查方法是否符合要求：非static, 只能是public，只能有一个参数
                     if (checkHasNoErrors(method, messager)) {
+                        // 把含有方法的对象保存在集合中
                         TypeElement classElement = (TypeElement) method.getEnclosingElement();
                         methodsByClass.putElement(classElement, method);
                     }
@@ -133,6 +147,9 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
         }
     }
 
+    /**
+     * 检查被注解的元素是否符合要求：非static, 只能是public，只能有一个参数
+     * */
     private boolean checkHasNoErrors(ExecutableElement element, Messager messager) {
         if (element.getModifiers().contains(Modifier.STATIC)) {
             messager.printMessage(Diagnostic.Kind.ERROR, "Subscriber method must not be static", element);
@@ -154,12 +171,17 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
 
     /**
      * Subscriber classes should be skipped if their class or any involved event class are not visible to the index.
+     *
+     *      检查需要被忽略的注解
      */
     private void checkForSubscribersToSkip(Messager messager, String myPackage) {
+        // 遍历被注解的元素集合
         for (TypeElement skipCandidate : methodsByClass.keySet()) {
             TypeElement subscriberClass = skipCandidate;
             while (subscriberClass != null) {
+                // 判断元素是否可见
                 if (!isVisible(myPackage, subscriberClass)) {
+                    // 添加到忽略的集合中
                     boolean added = classesToSkip.add(skipCandidate);
                     if (added) {
                         String msg;
@@ -173,23 +195,28 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
                     }
                     break;
                 }
+                // 得到这个元素被注解的所有方法
                 List<ExecutableElement> methods = methodsByClass.get(subscriberClass);
                 if (methods != null) {
                     for (ExecutableElement method : methods) {
                         String skipReason = null;
+                        // 获得第一个形参的类型
                         VariableElement param = method.getParameters().get(0);
                         TypeMirror typeMirror = getParamTypeMirror(param, messager);
+                        // 如果参数的类型是基本类型，忽略
                         if (!(typeMirror instanceof DeclaredType) ||
                                 !(((DeclaredType) typeMirror).asElement() instanceof TypeElement)) {
                             skipReason = "event type cannot be processed";
                         }
                         if (skipReason == null) {
+                            // 判断元素是否可见，否则忽略
                             TypeElement eventTypeElement = (TypeElement) ((DeclaredType) typeMirror).asElement();
                             if (!isVisible(myPackage, eventTypeElement)) {
                                 skipReason = "event type is not public";
                             }
                         }
                         if (skipReason != null) {
+                            // 如果刚才两项检查没通过，加入到忽略的集合中
                             boolean added = classesToSkip.add(skipCandidate);
                             if (added) {
                                 String msg = "Falling back to reflection because " + skipReason;
@@ -202,16 +229,22 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
                         }
                     }
                 }
+                // 找到自己的父类，继续遍历
                 subscriberClass = getSuperclass(subscriberClass);
             }
         }
     }
 
+    /**
+     * 获得一个参数的类型
+     * */
     private TypeMirror getParamTypeMirror(VariableElement param, Messager messager) {
         TypeMirror typeMirror = param.asType();
         // Check for generic type
         if (typeMirror instanceof TypeVariable) {
+            // 得到这个元素的父元素
             TypeMirror upperBound = ((TypeVariable) typeMirror).getUpperBound();
+            // 如果父元素是被声明的类型，非基本类型
             if (upperBound instanceof DeclaredType) {
                 if (messager != null) {
                     messager.printMessage(Diagnostic.Kind.NOTE, "Using upper bound type " + upperBound +
@@ -223,10 +256,14 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
         return typeMirror;
     }
 
+    /**
+     * 获得指定元素的父类
+     * */
     private TypeElement getSuperclass(TypeElement type) {
         if (type.getSuperclass().getKind() == TypeKind.DECLARED) {
             TypeElement superclass = (TypeElement) processingEnv.getTypeUtils().asElement(type.getSuperclass());
             String name = superclass.getQualifiedName().toString();
+            // 如果父类是java类或者是android类，检查结束
             if (name.startsWith("java.") || name.startsWith("javax.") || name.startsWith("android.")) {
                 // Skip system classes, this just degrades performance
                 return null;
@@ -238,17 +275,26 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
         }
     }
 
+    /**
+     * 获得一个类的class
+     * */
     private String getClassString(TypeElement typeElement, String myPackage) {
+        // 得到元素的包名
         PackageElement packageElement = getPackageElement(typeElement);
         String packageString = packageElement.getQualifiedName().toString();
         String className = typeElement.getQualifiedName().toString();
+        // 如果包名并不为空
         if (packageString != null && !packageString.isEmpty()) {
+            // 如果与我们创建的文件的包名相同，裁剪掉包名，只留下类名
             if (packageString.equals(myPackage)) {
                 className = cutPackage(myPackage, className);
-            } else if (packageString.equals("java.lang")) {
+            }
+            // 如果是java原生类，直接使用类名
+            else if (packageString.equals("java.lang")) {
                 className = typeElement.getSimpleName().toString();
             }
         }
+        // 其他情况使用完整的包名+类名
         return className;
     }
 
@@ -270,6 +316,9 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
         return (PackageElement) candidate;
     }
 
+    /**
+     * 创建一个SimpleSubscriberInfo对象
+     * */
     private void writeCreateSubscriberMethods(BufferedWriter writer, List<ExecutableElement> methods,
                                               String callPrefix, String myPackage) throws IOException {
         for (ExecutableElement method : methods) {
@@ -307,6 +356,11 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
         }
     }
 
+    /**
+     * 生成源文件
+     *
+     * @param index 指定的生成文件的名称
+     * */
     private void createInfoIndexFile(String index) {
         BufferedWriter writer = null;
         try {
@@ -326,16 +380,20 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
             writer.write("import java.util.HashMap;\n");
             writer.write("import java.util.Map;\n\n");
             writer.write("/** This class is generated by EventBus, do not edit. */\n");
+            // 实现SubscriberInfoIndex接口
             writer.write("public class " + clazz + " implements SubscriberInfoIndex {\n");
             writer.write("    private static final Map<Class<?>, SubscriberInfo> SUBSCRIBER_INDEX;\n\n");
+            // static代码块，把刚才找到的注解信息，直接保存在集合中
             writer.write("    static {\n");
             writer.write("        SUBSCRIBER_INDEX = new HashMap<Class<?>, SubscriberInfo>();\n\n");
             writeIndexLines(writer, myPackage);
             writer.write("    }\n\n");
+            // 加入一个注解信息
             writer.write("    private static void putIndex(SubscriberInfo info) {\n");
             writer.write("        SUBSCRIBER_INDEX.put(info.getSubscriberClass(), info);\n");
             writer.write("    }\n\n");
             writer.write("    @Override\n");
+            // 获得指定class的注解信息
             writer.write("    public SubscriberInfo getSubscriberInfo(Class<?> subscriberClass) {\n");
             writer.write("        SubscriberInfo info = SUBSCRIBER_INDEX.get(subscriberClass);\n");
             writer.write("        if (info != null) {\n");
@@ -358,14 +416,20 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
         }
     }
 
+    /**
+     * 把找到的注解信息封装起来
+     * */
     private void writeIndexLines(BufferedWriter writer, String myPackage) throws IOException {
         for (TypeElement subscriberTypeElement : methodsByClass.keySet()) {
+            // 如果这是一个被忽略的元素，直接跳过
             if (classesToSkip.contains(subscriberTypeElement)) {
                 continue;
             }
 
             String subscriberClass = getClassString(subscriberTypeElement, myPackage);
+            // 如果元素是可见的
             if (isVisible(myPackage, subscriberTypeElement)) {
+                // 把注解信息封装成SimpleSubscriberInfo，放入集合中
                 writeLine(writer, 2,
                         "putIndex(new SimpleSubscriberInfo(" + subscriberClass + ".class,",
                         "true,", "new SubscriberMethodInfo[] {");
@@ -378,6 +442,9 @@ public class EventBusAnnotationProcessor extends AbstractProcessor {
         }
     }
 
+    /**
+     * 判断元素是否是全局可见：public或者在app的包名中，或者是最外层类，不属于任何包
+     * */
     private boolean isVisible(String myPackage, TypeElement typeElement) {
         Set<Modifier> modifiers = typeElement.getModifiers();
         boolean visible;
